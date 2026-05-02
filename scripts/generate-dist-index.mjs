@@ -12,14 +12,6 @@ import path from "node:path"
 const rootDir = process.cwd()
 const boardsDir = path.join(rootDir, "boards")
 const distDir = path.join(rootDir, "dist")
-const runframeStandaloneSource = path.join(
-  rootDir,
-  "node_modules",
-  "@tscircuit",
-  "runframe",
-  "dist",
-  "standalone.min.js",
-)
 
 const importPattern =
   /\b(?:import|export)\s+(?:[^"'`]*?\s+from\s+)?["']([^"']+)["']|import\(\s*["']([^"']+)["']\s*\)/g
@@ -31,6 +23,13 @@ const escapeHtml = (value) =>
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;")
+
+const serializeJsonForScript = (value) =>
+  JSON.stringify(value)
+    .replaceAll("<", "\\u003c")
+    .replaceAll(">", "\\u003e")
+    .replaceAll("&", "\\u0026")
+    .replaceAll("</script", "<\\/script")
 
 const encodePathSegments = (value) =>
   value
@@ -176,14 +175,6 @@ const createFallbackTabs = (board) => {
   return tabs
 }
 
-const renderEmbeddedSourceScripts = (fsMap) =>
-  Object.entries(fsMap)
-    .map(
-      ([filePath, content]) =>
-        `<script type="tscircuit-tsx" data-path="${escapeHtml(filePath)}">${escapeHtml(content)}</script>`,
-    )
-    .join("\n")
-
 const renderBoardPage = (board) => {
   const fallbackTabs = createFallbackTabs(board)
   const defaultFallbackTab = fallbackTabs[0] ?? null
@@ -201,7 +192,7 @@ const renderBoardPage = (board) => {
     .join("")
 
   const boardActions = renderAssetActions(board)
-  const embeddedSources = renderEmbeddedSourceScripts(board.fsMap)
+  const serializedFsMap = serializeJsonForScript(board.fsMap)
 
   return `<!doctype html>
 <html lang="en">
@@ -499,8 +490,8 @@ const renderBoardPage = (board) => {
         </section>
       </section>
     </main>
-    ${embeddedSources}
-    <script type="module" src="../../vendor/runframe-standalone.min.js"></script>
+    <script id="board-fsmap" type="application/json">${serializedFsMap}</script>
+    <script type="module" src="../../vendor/runframe-static-viewer.js"></script>
     <script>
       const fallbackButtons = Array.from(document.querySelectorAll(".fallback-tab"));
       const fallbackImage = document.getElementById("fallback-image");
@@ -535,7 +526,6 @@ await mkdir(distDir, { recursive: true })
 
 const vendorDir = path.join(distDir, "vendor")
 await mkdir(vendorDir, { recursive: true })
-await copyFile(runframeStandaloneSource, path.join(vendorDir, "runframe-standalone.min.js"))
 
 const boardDirectories = await readdir(boardsDir, { withFileTypes: true })
 const boardEntries = []

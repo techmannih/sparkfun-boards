@@ -4,7 +4,7 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "build": "node scripts/generate-dist-index.mjs",
+    "build": "node scripts/generate-dist-index.mjs && bun build scripts/runframe-static-viewer.jsx --target=browser --format=esm --outfile=dist/vendor/runframe-static-viewer.js --minify",
     "format": "biome format --write .",
     "format:check": "biome format .",
     "tsci-build": "tsci build --concurrency 4",
@@ -14,8 +14,19 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
+    "@radix-ui/react-dialog": "^1.1.14",
+    "@radix-ui/react-popover": "^1.1.14",
+    "@radix-ui/react-tooltip": "^1.2.8",
     "@tscircuit/props": "^0.0.515",
+    "@tscircuit/runframe": "^0.0.1909",
     "@types/bun": "latest",
+    "cmdk": "^1.1.1",
+    "fuse.js": "^7.1.0",
+    "ky": "^1.7.5",
+    "lucide-react": "^0.488.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-error-boundary": "^6.0.0",
     "tscircuit": "^0.0.1716"
   },
   "peerDependencies": {
