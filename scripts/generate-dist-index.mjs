@@ -1,4 +1,5 @@
 import {
+  access,
   copyFile,
   mkdir,
   readFile,
@@ -11,6 +12,11 @@ import path from "node:path"
 const rootDir = process.cwd()
 const boardsDir = path.join(rootDir, "boards")
 const distDir = path.join(rootDir, "dist")
+const runframeOrigin = "https://runframe.tscircuit.com"
+const runframeIframeUrl = `${runframeOrigin}/iframe.html`
+
+const importPattern =
+  /\b(?:import|export)\s+(?:[^"'`]*?\s+from\s+)?["']([^"']+)["']|import\(\s*["']([^"']+)["']\s*\)/g
 
 const escapeHtml = (value) =>
   value
@@ -25,6 +31,23 @@ const encodePathSegments = (value) =>
     .split(path.sep)
     .map((segment) => encodeURIComponent(segment))
     .join("/")
+
+const toRepoRelativePosix = (absolutePath) =>
+  path.relative(rootDir, absolutePath).split(path.sep).join("/")
+
+const serializeForInlineScript = (value) =>
+  JSON.stringify(value)
+    .replaceAll("<", "\\u003c")
+    .replaceAll("</script", "<\\/script")
+
+const fileExists = async (absolutePath) => {
+  try {
+    await access(absolutePath)
+    return true
+  } catch {
+    return false
+  }
+}
 
 const findSnapshotsDirectory = async (directory) => {
   const entries = await readdir(directory, { withFileTypes: true })
@@ -47,6 +70,90 @@ const findSnapshotsDirectory = async (directory) => {
 
 const markdownLinkPattern = /\[[^\]]+\]\((https?:\/\/[^)]+)\)/i
 
+const importExtensions = [".ts", ".tsx", ".js", ".jsx", ".json"]
+
+const resolveRelativeImport = async (fromAbsolutePath, specifier) => {
+  const baseCandidate = path.resolve(path.dirname(fromAbsolutePath), specifier)
+  const hasExtension = path.extname(baseCandidate).length > 0
+  const candidates = []
+
+  if (hasExtension) {
+    candidates.push(baseCandidate)
+  } else {
+    candidates.push(baseCandidate)
+    for (const extension of importExtensions) {
+      candidates.push(`${baseCandidate}${extension}`)
+    }
+    for (const extension of importExtensions) {
+      candidates.push(path.join(baseCandidate, `index${extension}`))
+    }
+  }
+
+  for (const candidate of candidates) {
+    if (await fileExists(candidate)) return candidate
+  }
+
+  return null
+}
+
+const collectSourceFilesForEntrypoint = async (
+  entrypointAbsolutePath,
+  extraFiles = [],
+) => {
+  const sourceFiles = {}
+  const visited = new Set()
+
+  const visit = async (absolutePath) => {
+    if (visited.has(absolutePath)) return
+    visited.add(absolutePath)
+
+    const content = await readFile(absolutePath, "utf8")
+    sourceFiles[toRepoRelativePosix(absolutePath)] = content
+
+    const matches = [...content.matchAll(importPattern)]
+    for (const match of matches) {
+      const specifier = match[1] ?? match[2]
+      if (!specifier?.startsWith(".")) continue
+
+      const resolvedPath = await resolveRelativeImport(absolutePath, specifier)
+      if (!resolvedPath) continue
+
+      await visit(resolvedPath)
+    }
+  }
+
+  await visit(entrypointAbsolutePath)
+
+  for (const extraFile of extraFiles) {
+    if (!(await fileExists(extraFile))) continue
+    if (visited.has(extraFile)) continue
+    sourceFiles[toRepoRelativePosix(extraFile)] = await readFile(
+      extraFile,
+      "utf8",
+    )
+  }
+
+  return sourceFiles
+}
+
+const pickBoardEntrypoint = async (boardSourceDir) => {
+  const entries = await readdir(boardSourceDir, { withFileTypes: true })
+  const files = entries
+    .filter((entry) => entry.isFile())
+    .map((entry) => entry.name)
+
+  const preferred =
+    files.find((name) => name.endsWith(".circuit.tsx")) ||
+    files.find((name) => name.endsWith(".circuiit.tsx")) ||
+    files.find((name) => name === "index.tsx") ||
+    files.find((name) => name === "index.ts") ||
+    files.find((name) => name.endsWith(".tsx")) ||
+    files.find((name) => name.endsWith(".ts")) ||
+    null
+
+  return preferred ? path.join(boardSourceDir, preferred) : null
+}
+
 const renderAssetActions = (board) =>
   [
     board.productUrl
@@ -65,12 +172,11 @@ const renderAssetActions = (board) =>
     .filter(Boolean)
     .join("")
 
-const createViewerTabs = (board) => {
+const createFallbackTabs = (board) => {
   const tabs = []
 
   if (board.previewImage) {
     tabs.push({
-      id: "preview3d",
       label: "3D Preview",
       src: board.previewImageBoardRelative,
     })
@@ -78,7 +184,6 @@ const createViewerTabs = (board) => {
 
   if (board.pcbSnapshot) {
     tabs.push({
-      id: "pcb",
       label: "PCB SVG",
       src: board.pcbSnapshotBoardRelative,
     })
@@ -86,7 +191,6 @@ const createViewerTabs = (board) => {
 
   if (board.schematicSnapshot) {
     tabs.push({
-      id: "schematic",
       label: "Schematic SVG",
       src: board.schematicSnapshotBoardRelative,
     })
@@ -96,22 +200,28 @@ const createViewerTabs = (board) => {
 }
 
 const renderBoardPage = (board) => {
-  const tabs = createViewerTabs(board)
-  const defaultTab = tabs[0]
-  const tabButtons = tabs
+  const fallbackTabs = createFallbackTabs(board)
+  const defaultFallbackTab = fallbackTabs[0] ?? null
+  const fallbackButtons = fallbackTabs
     .map(
       (tab, index) => `
-          <button
-            class="tab-button${index === 0 ? " is-active" : ""}"
-            data-src="${tab.src}"
-            data-label="${escapeHtml(tab.label)}"
-          >
-            ${escapeHtml(tab.label)}
-          </button>`,
+            <button
+              class="fallback-tab${index === 0 ? " is-active" : ""}"
+              data-src="${tab.src}"
+              data-label="${escapeHtml(tab.label)}"
+            >
+              ${escapeHtml(tab.label)}
+            </button>`,
     )
     .join("")
 
   const boardActions = renderAssetActions(board)
+  const runframeProps = serializeForInlineScript({
+    fsMap: board.fsMap,
+    entrypoint: board.entrypoint,
+    availableTabs: ["pcb", "schematic", "cad"],
+    defaultTab: "pcb",
+  })
 
   return `<!doctype html>
 <html lang="en">
@@ -151,7 +261,7 @@ const renderBoardPage = (board) => {
       }
 
       main {
-        width: min(1200px, calc(100% - 32px));
+        width: min(1260px, calc(100% - 32px));
         margin: 0 auto;
         padding: 28px 0 56px;
       }
@@ -244,14 +354,77 @@ const renderBoardPage = (board) => {
         padding: 18px;
       }
 
-      .toolbar {
+      .runframe-wrap {
+        position: relative;
+        min-height: 72vh;
+        border-radius: 22px;
+        overflow: hidden;
+        background:
+          radial-gradient(circle at top, rgba(255, 255, 255, 0.8), rgba(244, 238, 230, 0.84)),
+          linear-gradient(180deg, rgba(255, 255, 255, 0.4), rgba(222, 214, 204, 0.55));
+      }
+
+      .runframe-wrap iframe {
+        display: block;
+        width: 100%;
+        min-height: 72vh;
+        border: 0;
+        background: white;
+      }
+
+      .runframe-status {
+        position: absolute;
+        inset: 14px;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.9);
+        color: var(--muted);
+        text-align: center;
+        transition: opacity 180ms ease;
+      }
+
+      .runframe-status.is-hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      .runframe-error {
+        margin-top: 14px;
+        padding: 14px 16px;
+        border-radius: 18px;
+        background: rgba(125, 30, 0, 0.08);
+        color: #7d1e00;
+        font-size: 0.95rem;
+        display: none;
+      }
+
+      .runframe-error.is-visible {
+        display: block;
+      }
+
+      .fallback {
+        margin-top: 16px;
+        padding-top: 16px;
+        border-top: 1px solid rgba(25, 30, 25, 0.08);
+      }
+
+      .fallback-header {
+        margin: 0 0 10px;
+        font-size: 0.96rem;
+        font-weight: 700;
+        color: var(--muted);
+      }
+
+      .fallback-toolbar {
         display: flex;
         flex-wrap: wrap;
         gap: 10px;
         margin-bottom: 14px;
       }
 
-      .tab-button {
+      .fallback-tab {
         border: 0;
         border-radius: 999px;
         padding: 10px 14px;
@@ -262,15 +435,15 @@ const renderBoardPage = (board) => {
         cursor: pointer;
       }
 
-      .tab-button.is-active {
+      .fallback-tab.is-active {
         background: var(--accent);
         color: white;
       }
 
-      .viewer {
+      .fallback-viewer {
         display: grid;
         place-items: center;
-        min-height: 72vh;
+        min-height: 46vh;
         padding: 14px;
         border-radius: 22px;
         background:
@@ -278,20 +451,24 @@ const renderBoardPage = (board) => {
           linear-gradient(180deg, rgba(255, 255, 255, 0.4), rgba(222, 214, 204, 0.55));
       }
 
-      .viewer img {
+      .fallback-viewer img {
         display: block;
         max-width: 100%;
-        max-height: calc(72vh - 28px);
+        max-height: calc(46vh - 28px);
         object-fit: contain;
         border-radius: 14px;
         box-shadow: 0 18px 36px rgba(31, 35, 33, 0.12);
         background: rgba(255, 255, 255, 0.85);
       }
 
-      .viewer-caption {
+      .fallback-caption {
         margin: 12px 4px 0;
         color: var(--muted);
         font-size: 0.92rem;
+      }
+
+      code {
+        font-family: "SFMono-Regular", "Consolas", "Liberation Mono", monospace;
       }
 
       @media (max-width: 960px) {
@@ -302,7 +479,7 @@ const renderBoardPage = (board) => {
 
       @media (max-width: 640px) {
         main {
-          width: min(100% - 20px, 1200px);
+          width: min(100% - 20px, 1260px);
           padding-top: 20px;
           padding-bottom: 28px;
         }
@@ -312,8 +489,13 @@ const renderBoardPage = (board) => {
           border-radius: 22px;
         }
 
-        .viewer {
-          min-height: 50vh;
+        .runframe-wrap,
+        .runframe-wrap iframe {
+          min-height: 54vh;
+        }
+
+        .fallback-viewer {
+          min-height: 34vh;
         }
       }
     </style>
@@ -326,52 +508,156 @@ const renderBoardPage = (board) => {
           <p class="eyebrow">${escapeHtml(board.directoryName)}</p>
           <h1>${escapeHtml(board.title)}</h1>
           <p>
-            This page is the deploy-safe viewer for this board. It uses the
-            committed snapshot assets from the repo, so it works on Vercel
-            without exposing the local-only <code>tsci dev</code> server.
+            This page hosts a live tscircuit runframe preview for the board source
+            files, which is much closer to the <code>bun run start</code> experience
+            than a static image gallery.
           </p>
           <div class="note">
-            The exact <code>bun run start</code> experience is a local dev server.
-            This deployed page is the closest safe hosted version.
+            The preview runs inside the hosted runframe iframe and receives this
+            board's source files plus entrypoint at page load.
           </div>
           <div class="actions">
             ${boardActions}
           </div>
         </aside>
         <section class="viewer-shell">
-          <div class="toolbar">
-            ${tabButtons}
+          <div class="runframe-wrap">
+            <iframe
+              id="runframe"
+              src="${runframeIframeUrl}"
+              title="${escapeHtml(board.title)} live preview"
+              loading="lazy"
+            ></iframe>
+            <div class="runframe-status" id="runframe-status">
+              Initializing live circuit preview...
+            </div>
           </div>
-          <div class="viewer">
-            <img
-              id="viewer-image"
-              src="${defaultTab ? defaultTab.src : ""}"
-              alt="${defaultTab ? `${escapeHtml(board.title)} ${escapeHtml(defaultTab.label)}` : escapeHtml(board.title)}"
-            />
-          </div>
-          <p class="viewer-caption" id="viewer-caption">
-            ${defaultTab ? escapeHtml(defaultTab.label) : "No preview assets available"}
-          </p>
+          <div class="runframe-error" id="runframe-error"></div>
+          ${
+            defaultFallbackTab
+              ? `
+          <section class="fallback">
+            <p class="fallback-header">Fallback committed snapshots</p>
+            <div class="fallback-toolbar">
+              ${fallbackButtons}
+            </div>
+            <div class="fallback-viewer">
+              <img
+                id="fallback-image"
+                src="${defaultFallbackTab.src}"
+                alt="${escapeHtml(board.title)} ${escapeHtml(defaultFallbackTab.label)}"
+              />
+            </div>
+            <p class="fallback-caption" id="fallback-caption">
+              ${escapeHtml(defaultFallbackTab.label)}
+            </p>
+          </section>`
+              : ""
+          }
         </section>
       </section>
     </main>
     <script>
-      const buttons = Array.from(document.querySelectorAll(".tab-button"));
-      const image = document.getElementById("viewer-image");
-      const caption = document.getElementById("viewer-caption");
+      const runframeProps = ${runframeProps};
+      const runframe = document.getElementById("runframe");
+      const runframeStatus = document.getElementById("runframe-status");
+      const runframeError = document.getElementById("runframe-error");
 
-      for (const button of buttons) {
+      let previewReady = false;
+      let propsSent = false;
+
+      const showRunframeError = (message) => {
+        if (!runframeError) return;
+        runframeError.textContent = message;
+        runframeError.classList.add("is-visible");
+      };
+
+      const hideLoadingOverlay = () => {
+        if (!runframeStatus) return;
+        runframeStatus.classList.add("is-hidden");
+      };
+
+      const sendRunframeProps = () => {
+        if (!runframe?.contentWindow) return;
+        propsSent = true;
+        runframe.contentWindow.postMessage(
+          {
+            runframe_type: "runframe_props_changed",
+            runframe_props: runframeProps,
+          },
+          "*",
+        );
+      };
+
+      const scheduleRunframeRetries = () => {
+        const retryDelays = [300, 1200, 3000, 7000];
+
+        for (const delay of retryDelays) {
+          window.setTimeout(() => {
+            if (previewReady) return;
+            sendRunframeProps();
+          }, delay);
+        }
+      };
+
+      runframe?.addEventListener("load", () => {
+        hideLoadingOverlay();
+        scheduleRunframeRetries();
+      });
+
+      window.addEventListener("message", (event) => {
+        if (event.data?.runframe_type === "runframe_ready_to_receive") {
+          sendRunframeProps();
+          return;
+        }
+
+        if (event.data?.runframe_type !== "runframe_event") return;
+
+        const runframeEvent = event.data.runframe_event;
+        if (!runframeEvent?.type) return;
+
+        if (
+          runframeEvent.type === "rendering_finished" ||
+          runframeEvent.type === "circuit_json_changed"
+        ) {
+          previewReady = true;
+          if (runframeError) {
+            runframeError.textContent = "";
+            runframeError.classList.remove("is-visible");
+          }
+          hideLoadingOverlay();
+          return;
+        }
+
+        if (runframeEvent.type === "error") {
+          showRunframeError(runframeEvent.error_message || "Runframe reported an error.");
+          hideLoadingOverlay();
+        }
+      });
+
+      window.setTimeout(() => {
+        if (previewReady || !propsSent) return;
+        showRunframeError(
+          "The live preview did not finish loading yet. You can still use the fallback snapshots below.",
+        );
+      }, 12000);
+
+      const fallbackButtons = Array.from(document.querySelectorAll(".fallback-tab"));
+      const fallbackImage = document.getElementById("fallback-image");
+      const fallbackCaption = document.getElementById("fallback-caption");
+
+      for (const button of fallbackButtons) {
         button.addEventListener("click", () => {
           const src = button.dataset.src;
           const label = button.dataset.label;
 
-          if (!src || !image || !caption) return;
+          if (!src || !fallbackImage || !fallbackCaption) return;
 
-          image.src = src;
-          image.alt = "${escapeHtml(board.title)} " + label;
-          caption.textContent = label;
+          fallbackImage.src = src;
+          fallbackImage.alt = "${escapeHtml(board.title)} " + label;
+          fallbackCaption.textContent = label;
 
-          for (const candidate of buttons) {
+          for (const candidate of fallbackButtons) {
             candidate.classList.remove("is-active");
           }
 
@@ -395,6 +681,7 @@ for (const board of boardDirectories) {
 
   const boardSourceDir = path.join(boardsDir, board.name)
   const readmePath = path.join(boardSourceDir, "README.md")
+  const boardEntrypointAbsolutePath = await pickBoardEntrypoint(boardSourceDir)
 
   let readme = ""
   try {
@@ -441,11 +728,23 @@ for (const board of boardDirectories) {
 
   snapshotFiles.sort((left, right) => left.name.localeCompare(right.name))
 
+  const fsMap = boardEntrypointAbsolutePath
+    ? await collectSourceFilesForEntrypoint(boardEntrypointAbsolutePath, [
+        path.join(rootDir, "tsconfig.json"),
+        path.join(rootDir, "tscircuit.config.json"),
+        path.join(boardSourceDir, "tscircuit.config.json"),
+      ])
+    : {}
+
   const boardEntry = {
     directoryName: board.name,
     title,
     productUrl,
     href: `${encodePathSegments(path.relative(distDir, boardPageDir))}/`,
+    entrypoint: boardEntrypointAbsolutePath
+      ? toRepoRelativePosix(boardEntrypointAbsolutePath)
+      : null,
+    fsMap,
     previewImage:
       snapshotFiles.find((file) => file.name.endsWith(".png"))?.hrefFromIndex ??
       null,
@@ -497,9 +796,9 @@ const boardListMarkup = boardEntries
             <p class="board-kicker">${escapeHtml(board.directoryName)}</p>
             <h2>${escapeHtml(board.title)}</h2>
             <p class="board-summary">
-              Open the hosted board viewer for the committed 3D, PCB, and schematic snapshots.
+              Open the live runframe viewer for this board, with committed snapshot assets as fallback.
             </p>
-            <span class="board-cta">Open board viewer</span>
+            <span class="board-cta">Open live board preview</span>
           </div>
         </a>
       </li>`,
@@ -712,10 +1011,6 @@ const indexHtml = `<!doctype html>
         letter-spacing: 0.02em;
       }
 
-      code {
-        font-family: "SFMono-Regular", "Consolas", "Liberation Mono", monospace;
-      }
-
       @media (max-width: 640px) {
         main {
           width: min(100% - 20px, 1120px);
@@ -734,11 +1029,11 @@ const indexHtml = `<!doctype html>
     <main>
       <section class="hero">
         <div class="eyebrow">SparkFun Board Library</div>
-        <h1>Snapshot gallery ready for deployment</h1>
+        <h1>Live board previews for deployment</h1>
         <p>
-          Click any board card to open its hosted viewer page. Each board page
-          shows the committed 3D preview, PCB SVG, and schematic SVG in a
-          deploy-safe experience that works on Vercel.
+          Click any board card to open a hosted tscircuit runframe preview for that
+          board. Each page also keeps the committed snapshot assets available as a
+          fallback if the live preview fails.
         </p>
         <div class="stats">${totalBoards} board viewers published</div>
         <div class="toolbar">
