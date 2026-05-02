@@ -12,6 +12,28 @@ const getRootElement = () => {
   return root
 }
 
+const renderStatus = (message, tone = "accent") => {
+  const palette =
+    tone === "error"
+      ? {
+          border: "rgba(123, 47, 0, 0.24)",
+          background: "rgba(255,255,255,0.92)",
+          color: "#7b2f00",
+        }
+      : {
+          border: "rgba(25, 30, 25, 0.12)",
+          background: "rgba(255,255,255,0.82)",
+          color: "#1d241f",
+        }
+
+  const root = getRootElement()
+  root.innerHTML = `
+    <div style="padding: 24px; border: 1px solid ${palette.border}; border-radius: 20px; background: ${palette.background}; color: ${palette.color}; font: 600 16px/1.6 'Segoe UI', sans-serif;">
+      ${message}
+    </div>
+  `
+}
+
 const parseBoardFsMap = () => {
   const fsMapScript = document.getElementById("board-fsmap")
   if (!fsMapScript) {
@@ -28,17 +50,14 @@ const parseBoardFsMap = () => {
   return parsed
 }
 
-const renderError = (message) => {
-  const root = getRootElement()
-  root.innerHTML = `
-    <div style="padding: 24px; border-radius: 20px; background: rgba(255,255,255,0.88); color: #7b2f00; font: 600 16px/1.6 'Segoe UI', sans-serif;">
-      ${message}
-    </div>
-  `
-}
+const renderError = (message) => renderStatus(message, "error")
 
 const bootstrap = () => {
+  renderStatus("Loading live board preview...")
+
   const mainComponentPath = window.TSCIRCUIT_DEFAULT_MAIN_COMPONENT_PATH
+  const runframeEntrypoint =
+    window.TSCIRCUIT_RUNFRAME_ENTRYPOINT || window.TSCIRCUIT_DEFAULT_MAIN_COMPONENT_PATH
 
   if (!mainComponentPath) {
     renderError("This board page is missing its main component path.")
@@ -60,7 +79,7 @@ const bootstrap = () => {
     <RunFrame
       defaultTab="pcb"
       enableFetchProxy
-      entrypoint={mainComponentPath}
+      entrypoint={runframeEntrypoint}
       fsMap={fsMap}
       mainComponentPath={mainComponentPath}
       showFileMenu
@@ -69,4 +88,18 @@ const bootstrap = () => {
   )
 }
 
-bootstrap()
+window.addEventListener("error", (event) => {
+  const message = event.error?.message ?? event.message ?? "Unknown viewer error"
+  renderError(message)
+})
+
+window.addEventListener("unhandledrejection", (event) => {
+  const reason = event.reason instanceof Error ? event.reason.message : String(event.reason)
+  renderError(reason)
+})
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", bootstrap, { once: true })
+} else {
+  bootstrap()
+}

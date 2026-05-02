@@ -49,6 +49,21 @@ const fileExists = async (absolutePath) => {
   }
 }
 
+const createRunframeEntrypoint = (absoluteEntrypointPath) => {
+  const boardFilename = path.basename(absoluteEntrypointPath)
+  const boardDirectory = path.dirname(absoluteEntrypointPath)
+  const generatedEntrypointPath = path.join(boardDirectory, "__runframe-entrypoint.tsx")
+
+  return {
+    absolutePath: generatedEntrypointPath,
+    repoRelativePath: toRepoRelativePosix(generatedEntrypointPath),
+    content: `import BoardComponent from "./${boardFilename}"
+
+circuit.add(<BoardComponent />)
+`,
+  }
+}
+
 const findSnapshotsDirectory = async (directory) => {
   const entries = await readdir(directory, { withFileTypes: true })
 
@@ -420,6 +435,7 @@ const renderBoardPage = (board) => {
     </style>
     <script>
       window.TSCIRCUIT_DEFAULT_MAIN_COMPONENT_PATH = ${JSON.stringify(board.entrypoint)};
+      window.TSCIRCUIT_RUNFRAME_ENTRYPOINT = ${JSON.stringify(board.runframeEntrypoint)};
       window.TSCIRCUIT_PACKAGE_NAME = ${JSON.stringify(board.title)};
 
       ${
@@ -451,14 +467,15 @@ const renderBoardPage = (board) => {
           <p class="eyebrow">${escapeHtml(board.directoryName)}</p>
           <h1>${escapeHtml(board.title)}</h1>
           <p>
-            This page embeds the runframe standalone viewer with the board source
-            files baked into the HTML, which is the closest deploy-safe equivalent
-            to the local <code>bun run start</code> preview.
+            This page embeds a production runframe viewer with the board source
+            files baked into the HTML, so the deployed page can execute the same
+            board code instead of only showing committed snapshots.
           </p>
           <div class="note">
-            The runframe viewer below gets this board's source files directly from
-            the page, so it does not depend on the local-only <code>/api</code>
-            file server used by <code>tsci dev</code>.
+            The viewer below gets this board's source files and a generated
+            runframe entrypoint directly from the page, so it does not depend on
+            the local-only <code>/api</code> file server used by
+            <code>tsci dev</code>.
           </div>
           <div class="actions">
             ${boardActions}
@@ -586,6 +603,14 @@ for (const board of boardDirectories) {
       ])
     : {}
 
+  const runframeEntrypoint = boardEntrypointAbsolutePath
+    ? createRunframeEntrypoint(boardEntrypointAbsolutePath)
+    : null
+
+  if (runframeEntrypoint) {
+    fsMap[runframeEntrypoint.repoRelativePath] = runframeEntrypoint.content
+  }
+
   const boardEntry = {
     directoryName: board.name,
     title,
@@ -594,6 +619,7 @@ for (const board of boardDirectories) {
     entrypoint: boardEntrypointAbsolutePath
       ? toRepoRelativePosix(boardEntrypointAbsolutePath)
       : null,
+    runframeEntrypoint: runframeEntrypoint?.repoRelativePath ?? null,
     fsMap,
     previewImage:
       snapshotFiles.find((file) => file.name.endsWith(".png"))?.hrefFromIndex ?? null,
