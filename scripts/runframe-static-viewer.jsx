@@ -60,6 +60,7 @@ const bootstrap = () => {
     <RunFrame
       defaultTab="pcb"
       enableFetchProxy
+      entrypoint={mainComponentPath}
       fsMap={fsMap}
       mainComponentPath={mainComponentPath}
       showFileMenu
