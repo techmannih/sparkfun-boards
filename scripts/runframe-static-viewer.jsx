@@ -2,6 +2,8 @@ import React from "react"
 import { createRoot } from "react-dom/client"
 import { RunFrame } from "@tscircuit/runframe/runner"
 
+const LIVE_PREVIEW_TABS = ["pcb", "schematic", "cad", "errors"]
+
 const getRootElement = () => {
   const existingRoot = document.getElementById("root")
   if (existingRoot) return existingRoot
@@ -77,12 +79,13 @@ const bootstrap = () => {
 
   root.render(
     <RunFrame
+      availableTabs={LIVE_PREVIEW_TABS}
       defaultTab="pcb"
       enableFetchProxy
       entrypoint={runframeEntrypoint}
       fsMap={fsMap}
       mainComponentPath={mainComponentPath}
-      showFileMenu
+      showFileMenu={false}
       showToggleFullScreen
     />,
   )
