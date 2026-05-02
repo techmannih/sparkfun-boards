@@ -12,8 +12,14 @@ import path from "node:path"
 const rootDir = process.cwd()
 const boardsDir = path.join(rootDir, "boards")
 const distDir = path.join(rootDir, "dist")
-const runframeOrigin = "https://runframe.tscircuit.com"
-const runframeIframeUrl = `${runframeOrigin}/iframe.html`
+const runframeStandaloneSource = path.join(
+  rootDir,
+  "node_modules",
+  "@tscircuit",
+  "runframe",
+  "dist",
+  "standalone.min.js",
+)
 
 const importPattern =
   /\b(?:import|export)\s+(?:[^"'`]*?\s+from\s+)?["']([^"']+)["']|import\(\s*["']([^"']+)["']\s*\)/g
@@ -34,11 +40,6 @@ const encodePathSegments = (value) =>
 
 const toRepoRelativePosix = (absolutePath) =>
   path.relative(rootDir, absolutePath).split(path.sep).join("/")
-
-const serializeForInlineScript = (value) =>
-  JSON.stringify(value)
-    .replaceAll("<", "\\u003c")
-    .replaceAll("</script", "<\\/script")
 
 const fileExists = async (absolutePath) => {
   try {
@@ -69,7 +70,6 @@ const findSnapshotsDirectory = async (directory) => {
 }
 
 const markdownLinkPattern = /\[[^\]]+\]\((https?:\/\/[^)]+)\)/i
-
 const importExtensions = [".ts", ".tsx", ".js", ".jsx", ".json"]
 
 const resolveRelativeImport = async (fromAbsolutePath, specifier) => {
@@ -96,10 +96,7 @@ const resolveRelativeImport = async (fromAbsolutePath, specifier) => {
   return null
 }
 
-const collectSourceFilesForEntrypoint = async (
-  entrypointAbsolutePath,
-  extraFiles = [],
-) => {
+const collectSourceFilesForEntrypoint = async (entrypointAbsolutePath, extraFiles = []) => {
   const sourceFiles = {}
   const visited = new Set()
 
@@ -127,10 +124,7 @@ const collectSourceFilesForEntrypoint = async (
   for (const extraFile of extraFiles) {
     if (!(await fileExists(extraFile))) continue
     if (visited.has(extraFile)) continue
-    sourceFiles[toRepoRelativePosix(extraFile)] = await readFile(
-      extraFile,
-      "utf8",
-    )
+    sourceFiles[toRepoRelativePosix(extraFile)] = await readFile(extraFile, "utf8")
   }
 
   return sourceFiles
@@ -138,9 +132,7 @@ const collectSourceFilesForEntrypoint = async (
 
 const pickBoardEntrypoint = async (boardSourceDir) => {
   const entries = await readdir(boardSourceDir, { withFileTypes: true })
-  const files = entries
-    .filter((entry) => entry.isFile())
-    .map((entry) => entry.name)
+  const files = entries.filter((entry) => entry.isFile()).map((entry) => entry.name)
 
   const preferred =
     files.find((name) => name.endsWith(".circuit.tsx")) ||
@@ -175,29 +167,22 @@ const renderAssetActions = (board) =>
 const createFallbackTabs = (board) => {
   const tabs = []
 
-  if (board.previewImage) {
-    tabs.push({
-      label: "3D Preview",
-      src: board.previewImageBoardRelative,
-    })
-  }
-
-  if (board.pcbSnapshot) {
-    tabs.push({
-      label: "PCB SVG",
-      src: board.pcbSnapshotBoardRelative,
-    })
-  }
-
+  if (board.previewImage) tabs.push({ label: "3D Preview", src: board.previewImageBoardRelative })
+  if (board.pcbSnapshot) tabs.push({ label: "PCB SVG", src: board.pcbSnapshotBoardRelative })
   if (board.schematicSnapshot) {
-    tabs.push({
-      label: "Schematic SVG",
-      src: board.schematicSnapshotBoardRelative,
-    })
+    tabs.push({ label: "Schematic SVG", src: board.schematicSnapshotBoardRelative })
   }
 
   return tabs
 }
+
+const renderEmbeddedSourceScripts = (fsMap) =>
+  Object.entries(fsMap)
+    .map(
+      ([filePath, content]) =>
+        `<script type="tscircuit-tsx" data-path="${escapeHtml(filePath)}">${escapeHtml(content)}</script>`,
+    )
+    .join("\n")
 
 const renderBoardPage = (board) => {
   const fallbackTabs = createFallbackTabs(board)
@@ -216,12 +201,7 @@ const renderBoardPage = (board) => {
     .join("")
 
   const boardActions = renderAssetActions(board)
-  const runframeProps = serializeForInlineScript({
-    fsMap: board.fsMap,
-    entrypoint: board.entrypoint,
-    availableTabs: ["pcb", "schematic", "cad"],
-    defaultTab: "pcb",
-  })
+  const embeddedSources = renderEmbeddedSourceScripts(board.fsMap)
 
   return `<!doctype html>
 <html lang="en">
@@ -354,54 +334,13 @@ const renderBoardPage = (board) => {
         padding: 18px;
       }
 
-      .runframe-wrap {
-        position: relative;
+      #root {
         min-height: 72vh;
         border-radius: 22px;
         overflow: hidden;
         background:
           radial-gradient(circle at top, rgba(255, 255, 255, 0.8), rgba(244, 238, 230, 0.84)),
           linear-gradient(180deg, rgba(255, 255, 255, 0.4), rgba(222, 214, 204, 0.55));
-      }
-
-      .runframe-wrap iframe {
-        display: block;
-        width: 100%;
-        min-height: 72vh;
-        border: 0;
-        background: white;
-      }
-
-      .runframe-status {
-        position: absolute;
-        inset: 14px;
-        display: grid;
-        place-items: center;
-        padding: 24px;
-        border-radius: 18px;
-        background: rgba(255, 255, 255, 0.9);
-        color: var(--muted);
-        text-align: center;
-        transition: opacity 180ms ease;
-      }
-
-      .runframe-status.is-hidden {
-        opacity: 0;
-        pointer-events: none;
-      }
-
-      .runframe-error {
-        margin-top: 14px;
-        padding: 14px 16px;
-        border-radius: 18px;
-        background: rgba(125, 30, 0, 0.08);
-        color: #7d1e00;
-        font-size: 0.95rem;
-        display: none;
-      }
-
-      .runframe-error.is-visible {
-        display: block;
       }
 
       .fallback {
@@ -467,10 +406,6 @@ const renderBoardPage = (board) => {
         font-size: 0.92rem;
       }
 
-      code {
-        font-family: "SFMono-Regular", "Consolas", "Liberation Mono", monospace;
-      }
-
       @media (max-width: 960px) {
         .layout {
           grid-template-columns: 1fr;
@@ -485,20 +420,37 @@ const renderBoardPage = (board) => {
         }
 
         .sidebar,
-        .viewer-shell {
-          border-radius: 22px;
-        }
-
-        .runframe-wrap,
-        .runframe-wrap iframe {
-          min-height: 54vh;
-        }
-
+        .viewer-shell,
+        #root,
         .fallback-viewer {
-          min-height: 34vh;
+          border-radius: 22px;
         }
       }
     </style>
+    <script>
+      window.TSCIRCUIT_DEFAULT_MAIN_COMPONENT_PATH = ${JSON.stringify(board.entrypoint)};
+      window.TSCIRCUIT_PACKAGE_NAME = ${JSON.stringify(board.title)};
+
+      ${
+        board.entrypoint
+          ? `
+      {
+        const params = new URLSearchParams(window.location.hash.slice(1));
+
+        if (!params.get("file")) {
+          params.set("file", ${JSON.stringify(board.entrypoint)});
+          const nextHash = params.toString();
+          window.history.replaceState(
+            null,
+            "",
+            \`\${window.location.pathname}\${window.location.search}\${nextHash ? \`#\${nextHash}\` : ""}\`,
+          );
+        }
+      }
+      `
+          : ""
+      }
+    </script>
   </head>
   <body>
     <main>
@@ -508,31 +460,21 @@ const renderBoardPage = (board) => {
           <p class="eyebrow">${escapeHtml(board.directoryName)}</p>
           <h1>${escapeHtml(board.title)}</h1>
           <p>
-            This page hosts a live tscircuit runframe preview for the board source
-            files, which is much closer to the <code>bun run start</code> experience
-            than a static image gallery.
+            This page embeds the runframe standalone viewer with the board source
+            files baked into the HTML, which is the closest deploy-safe equivalent
+            to the local <code>bun run start</code> preview.
           </p>
           <div class="note">
-            The preview runs inside the hosted runframe iframe and receives this
-            board's source files plus entrypoint at page load.
+            The runframe viewer below gets this board's source files directly from
+            the page, so it does not depend on the local-only <code>/api</code>
+            file server used by <code>tsci dev</code>.
           </div>
           <div class="actions">
             ${boardActions}
           </div>
         </aside>
         <section class="viewer-shell">
-          <div class="runframe-wrap">
-            <iframe
-              id="runframe"
-              src="${runframeIframeUrl}"
-              title="${escapeHtml(board.title)} live preview"
-              loading="lazy"
-            ></iframe>
-            <div class="runframe-status" id="runframe-status">
-              Initializing live circuit preview...
-            </div>
-          </div>
-          <div class="runframe-error" id="runframe-error"></div>
+          <div id="root"></div>
           ${
             defaultFallbackTab
               ? `
@@ -557,91 +499,9 @@ const renderBoardPage = (board) => {
         </section>
       </section>
     </main>
+    ${embeddedSources}
+    <script type="module" src="../../vendor/runframe-standalone.min.js"></script>
     <script>
-      const runframeProps = ${runframeProps};
-      const runframe = document.getElementById("runframe");
-      const runframeStatus = document.getElementById("runframe-status");
-      const runframeError = document.getElementById("runframe-error");
-
-      let previewReady = false;
-      let propsSent = false;
-
-      const showRunframeError = (message) => {
-        if (!runframeError) return;
-        runframeError.textContent = message;
-        runframeError.classList.add("is-visible");
-      };
-
-      const hideLoadingOverlay = () => {
-        if (!runframeStatus) return;
-        runframeStatus.classList.add("is-hidden");
-      };
-
-      const sendRunframeProps = () => {
-        if (!runframe?.contentWindow) return;
-        propsSent = true;
-        runframe.contentWindow.postMessage(
-          {
-            runframe_type: "runframe_props_changed",
-            runframe_props: runframeProps,
-          },
-          "*",
-        );
-      };
-
-      const scheduleRunframeRetries = () => {
-        const retryDelays = [300, 1200, 3000, 7000];
-
-        for (const delay of retryDelays) {
-          window.setTimeout(() => {
-            if (previewReady) return;
-            sendRunframeProps();
-          }, delay);
-        }
-      };
-
-      runframe?.addEventListener("load", () => {
-        hideLoadingOverlay();
-        scheduleRunframeRetries();
-      });
-
-      window.addEventListener("message", (event) => {
-        if (event.data?.runframe_type === "runframe_ready_to_receive") {
-          sendRunframeProps();
-          return;
-        }
-
-        if (event.data?.runframe_type !== "runframe_event") return;
-
-        const runframeEvent = event.data.runframe_event;
-        if (!runframeEvent?.type) return;
-
-        if (
-          runframeEvent.type === "rendering_finished" ||
-          runframeEvent.type === "circuit_json_changed"
-        ) {
-          previewReady = true;
-          if (runframeError) {
-            runframeError.textContent = "";
-            runframeError.classList.remove("is-visible");
-          }
-          hideLoadingOverlay();
-          return;
-        }
-
-        if (runframeEvent.type === "error") {
-          showRunframeError(runframeEvent.error_message || "Runframe reported an error.");
-          hideLoadingOverlay();
-        }
-      });
-
-      window.setTimeout(() => {
-        if (previewReady || !propsSent) return;
-        showRunframeError(
-          "The live preview did not finish loading yet. You can still use the fallback snapshots below.",
-        );
-      }, 12000);
-
       const fallbackButtons = Array.from(document.querySelectorAll(".fallback-tab"));
       const fallbackImage = document.getElementById("fallback-image");
       const fallbackCaption = document.getElementById("fallback-caption");
@@ -654,7 +514,7 @@ const renderBoardPage = (board) => {
           if (!src || !fallbackImage || !fallbackCaption) return;
 
           fallbackImage.src = src;
-          fallbackImage.alt = "${escapeHtml(board.title)} " + label;
+          fallbackImage.alt = ${JSON.stringify(board.title)} + " " + label;
           fallbackCaption.textContent = label;
 
           for (const candidate of fallbackButtons) {
@@ -672,6 +532,10 @@ const renderBoardPage = (board) => {
 
 await rm(distDir, { recursive: true, force: true })
 await mkdir(distDir, { recursive: true })
+
+const vendorDir = path.join(distDir, "vendor")
+await mkdir(vendorDir, { recursive: true })
+await copyFile(runframeStandaloneSource, path.join(vendorDir, "runframe-standalone.min.js"))
 
 const boardDirectories = await readdir(boardsDir, { withFileTypes: true })
 const boardEntries = []
@@ -716,9 +580,7 @@ for (const board of boardDirectories) {
       await copyFile(sourcePath, destinationPath)
       snapshotFiles.push({
         name: snapshot.name,
-        hrefFromIndex: encodePathSegments(
-          path.relative(distDir, destinationPath),
-        ),
+        hrefFromIndex: encodePathSegments(path.relative(distDir, destinationPath)),
         hrefFromBoardPage: encodePathSegments(
           path.relative(boardPageDir, destinationPath),
         ),
@@ -731,8 +593,6 @@ for (const board of boardDirectories) {
   const fsMap = boardEntrypointAbsolutePath
     ? await collectSourceFilesForEntrypoint(boardEntrypointAbsolutePath, [
         path.join(rootDir, "tsconfig.json"),
-        path.join(rootDir, "tscircuit.config.json"),
-        path.join(boardSourceDir, "tscircuit.config.json"),
       ])
     : {}
 
@@ -746,19 +606,15 @@ for (const board of boardDirectories) {
       : null,
     fsMap,
     previewImage:
-      snapshotFiles.find((file) => file.name.endsWith(".png"))?.hrefFromIndex ??
-      null,
+      snapshotFiles.find((file) => file.name.endsWith(".png"))?.hrefFromIndex ?? null,
     previewImageBoardRelative:
-      snapshotFiles.find((file) => file.name.endsWith(".png"))
-        ?.hrefFromBoardPage ?? null,
+      snapshotFiles.find((file) => file.name.endsWith(".png"))?.hrefFromBoardPage ?? null,
     pcbSnapshot:
-      snapshotFiles.find(
-        (file) => file.name.includes("pcb") && file.name.endsWith(".svg"),
-      )?.hrefFromIndex ?? null,
+      snapshotFiles.find((file) => file.name.includes("pcb") && file.name.endsWith(".svg"))
+        ?.hrefFromIndex ?? null,
     pcbSnapshotBoardRelative:
-      snapshotFiles.find(
-        (file) => file.name.includes("pcb") && file.name.endsWith(".svg"),
-      )?.hrefFromBoardPage ?? null,
+      snapshotFiles.find((file) => file.name.includes("pcb") && file.name.endsWith(".svg"))
+        ?.hrefFromBoardPage ?? null,
     schematicSnapshot:
       snapshotFiles.find(
         (file) => file.name.includes("schematic") && file.name.endsWith(".svg"),
@@ -770,10 +626,7 @@ for (const board of boardDirectories) {
   }
 
   boardEntries.push(boardEntry)
-  await writeFile(
-    path.join(boardPageDir, "index.html"),
-    renderBoardPage(boardEntry),
-  )
+  await writeFile(path.join(boardPageDir, "index.html"), renderBoardPage(boardEntry))
 }
 
 boardEntries.sort((left, right) => left.title.localeCompare(right.title))
@@ -796,7 +649,7 @@ const boardListMarkup = boardEntries
             <p class="board-kicker">${escapeHtml(board.directoryName)}</p>
             <h2>${escapeHtml(board.title)}</h2>
             <p class="board-summary">
-              Open the live runframe viewer for this board, with committed snapshot assets as fallback.
+              Open the live runframe board preview, with committed snapshot assets still available below it.
             </p>
             <span class="board-cta">Open live board preview</span>
           </div>
@@ -1031,9 +884,9 @@ const indexHtml = `<!doctype html>
         <div class="eyebrow">SparkFun Board Library</div>
         <h1>Live board previews for deployment</h1>
         <p>
-          Click any board card to open a hosted tscircuit runframe preview for that
-          board. Each page also keeps the committed snapshot assets available as a
-          fallback if the live preview fails.
+          Click any board card to open a deploy-safe live board preview powered by
+          the runframe standalone viewer, with committed snapshots still available
+          on each page as a fallback.
         </p>
         <div class="stats">${totalBoards} board viewers published</div>
         <div class="toolbar">
