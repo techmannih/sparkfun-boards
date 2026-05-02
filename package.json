@@ -4,9 +4,10 @@
   "type": "module",
   "private": true,
   "scripts": {
+    "build": "node scripts/generate-dist-index.mjs",
     "format": "biome format --write .",
     "format:check": "biome format .",
-    "tsci-build": "tsci build",
+    "tsci-build": "tsci build --concurrency 4",
     "snapshot": "tsci snapshot --3d",
     "snapshot:update": "tsci snapshot --update --3d",
     "start": "bunx tsci dev"
